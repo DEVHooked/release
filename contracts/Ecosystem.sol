@@ -2,13 +2,11 @@
 pragma solidity ^0.8.9;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/utils/Context.sol";
 
 contract Ecosystem is Context {
     event ERC20Released(address indexed token, uint256 amount);
 
-    uint256 private _released;
     uint256 private _erc20Released;
     address private immutable _beneficiary;
     address private immutable _token;
@@ -65,7 +63,7 @@ contract Ecosystem is Context {
      * @dev Amount of token that can be released
      */
     function releasable() public view virtual returns (uint256) {
-        return releasedAmount(_token, uint64(block.timestamp)) - released();
+        return releasedAmount(uint64(block.timestamp)) - released();
     }
 
     function release() public virtual {
@@ -75,8 +73,8 @@ contract Ecosystem is Context {
         SafeERC20.safeTransfer(IERC20(_token), beneficiary(), amount);
     }
 
-    function releasedAmount(address token, uint64 timestamp) public view virtual returns (uint256) {
-        return _releaseSchedule(IERC20(token).balanceOf(address(this)) + released(), timestamp);
+    function releasedAmount(uint64 timestamp) public view virtual returns (uint256) {
+        return _releaseSchedule(IERC20(_token).balanceOf(address(this)) + released(), timestamp);
     }
 
     /**
