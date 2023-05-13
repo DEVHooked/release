@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.9;
+pragma solidity 0.8.17;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/Context.sol";
 
-contract PrivateSale is Context {
-    event ERC20Released(address indexed token, uint256 amount);
+contract PrivateSale {
+    event ERC20Released(uint256 amount);
 
     uint256 private _erc20Released;
     address private immutable _beneficiary;
     address private immutable _token;
-    uint64 private immutable _start = 1701388800;
-    uint64 private immutable _duration = 1796083200 - 1701388800;
+    uint64 private constant _start = 1701388800;
+    uint64 private constant _duration = 1796083200 - 1701388800;
 
     /**
      * @dev Array with pre-calculated timestamps for each release period
@@ -21,6 +20,7 @@ contract PrivateSale is Context {
         1730419200, 1733011200, 1735689600, 1738368000, 1740787200, 1743465600, 1746057600, 1748736000, 1751328000, 1754006400, 
         1756684800, 1759276800, 1761955200, 1764547200, 1767225600, 1769904000, 1772323200, 1775001600, 1777593600, 1780272000, 
         1782864000, 1785542400, 1788220800, 1790812800, 1793491200, 1796083200];
+    uint256 private immutable _unlockTimestampsLenght = _unlockTimestamps.length;
 
     constructor(address tokenAddress, address beneficiaryAddress) {
         require(tokenAddress != address(0), "PrivateSale: token is zero address");
@@ -64,10 +64,10 @@ contract PrivateSale is Context {
         return releasedAmount(uint64(block.timestamp)) - released();
     }
 
-    function release() public virtual {
+    function release() external virtual {
         uint256 amount = releasable();
         _erc20Released += amount;
-        emit ERC20Released(_token, amount);
+        emit ERC20Released(amount);
         SafeERC20.safeTransfer(IERC20(_token), beneficiary(), amount);
     }
 
@@ -76,16 +76,16 @@ contract PrivateSale is Context {
     }
 
     /**
-     * @dev Calculates the amount of tokens that has already released. Default implementation is a linear curve.
+     * @dev Calculates the amount of tokens that has already released.
      */
     function _releaseSchedule(uint256 totalAllocation, uint64 timestamp) internal view virtual returns (uint256) {
         if (timestamp < start()) {
             return 0;
-        } else if (timestamp > start() + duration()) {
+        } else if (timestamp >= start() + duration()) {
             return totalAllocation;
         } else {
             uint256 elapsedTime = 0;
-            for (uint256 i = 0; i < _unlockTimestamps.length; i++) {
+            for (uint256 i = 0; i < _unlockTimestampsLenght; i++) {
                 if (timestamp >= _unlockTimestamps[i]) {
                     elapsedTime++;
                 } else {
@@ -95,7 +95,7 @@ contract PrivateSale is Context {
             if (elapsedTime == 0) {
                 return totalAllocation / 10;
             }else{
-                return totalAllocation / 10 + (totalAllocation * elapsedTime * 9 / 10) / _unlockTimestamps.length;
+                return totalAllocation / 10 + (totalAllocation * elapsedTime * 9 / 10) / _unlockTimestampsLenght;
             }
         }
     }
