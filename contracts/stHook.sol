@@ -19,7 +19,7 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
     uint256 public immutable quarterBlock;
     uint256 public immutable halfBlock;
     uint256 public immutable threeQuartersBlock;
-    uint256 public constant PRECISION_FACTOR = 1e12;
+    uint256 public constant PRECISION_FACTOR = 1e18;
     bool public paused = false;
 
 
@@ -56,12 +56,13 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
         threeQuartersBlock = _startBlock + 3 * (_endBlock - _startBlock) / 4;
     }
 
-    function stake(uint256 _amount, bool _lock) public nonReentrant {
+    function stake(uint256 _amount, bool _lock) public nonReentrant notPaused {
         hookToken.safeTransferFrom(msg.sender, address(this), _amount);
         updatePool();
         uint256 pending = pendingReward(msg.sender);
         if (pending > 0) {
             hookToken.safeTransfer(msg.sender, pending);
+            emit Claim(msg.sender, pending);
         }
         _mint(msg.sender, _amount);
         if (_lock) {
@@ -90,10 +91,15 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
     function withdraw(uint256 _amount) public nonReentrant notPaused {
         uint256 balanceOfUser = balanceOf(msg.sender);
         require(balanceOfUser >= _amount, "stHOOK: withdraw amount exceeds balance");
-        require(userInfo[msg.sender].lockedAmount <= balanceOfUser - _amount, "stHOOK: cannot withdraw locked tokens");
+        if (block.number <= endBlock) {
+            require(userInfo[msg.sender].lockedAmount <= balanceOfUser - _amount, "stHOOK: cannot withdraw locked tokens");
+        }
         updatePool();
         
         uint256 pending = (balanceOf(msg.sender) + userInfo[msg.sender].boosterShare) * accRewardPerShare / PRECISION_FACTOR - userInfo[msg.sender].rewardDebt; 
+        if(pending >0){
+            emit Claim(msg.sender, pending);
+        }
         require(hookToken.balanceOf(address(this)) >= pending + _amount, "stHOOK: insufficient balance");    
         _burn(msg.sender, _amount);
         hookToken.safeTransfer(msg.sender, _amount + pending);
@@ -125,17 +131,17 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
             return;
         }
         uint256 blockMultiplier = getBlockMultiplier(lastRewardBlock, block.number);
-        if (block.number <= endBlock) {
-            uint256 tokenReward = blockMultiplier * rewardPerBlock;
-            uint256 balance = hookToken.balanceOf(address(this));
-            // If the rewards are insufficient, pause the contract. The rewards should be deposited by the owner.
-            if (balance < tokenReward + accruedRewards + balanceOf(address(this))) {
-                paused = true;
-                emit Pause(paused);
-            }
-            accruedRewards = accruedRewards + tokenReward;
-            accRewardPerShare = accRewardPerShare + (tokenReward * PRECISION_FACTOR / (totalSupply() + totalBoosterShare));
+
+        uint256 tokenReward = blockMultiplier * rewardPerBlock;
+        uint256 balance = hookToken.balanceOf(address(this));
+        // If the rewards are insufficient, pause the contract. The rewards should be deposited by the owner.
+        if (balance < tokenReward + accruedRewards + totalSupply()) {
+            paused = true;
+            emit Pause(paused);
         }
+        accruedRewards = accruedRewards + tokenReward;
+        accRewardPerShare = accRewardPerShare + (tokenReward * PRECISION_FACTOR / (totalSupply() + totalBoosterShare));
+        
         lastRewardBlock = block.number;
     }
 
@@ -159,10 +165,9 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
         uint256 _accRewardPerShare = accRewardPerShare;
         if (block.number > lastRewardBlock && totalSupply() != 0) {
             uint256 blockMultiplier = getBlockMultiplier(lastRewardBlock, block.number);
-            if (block.number <= endBlock) {
-                uint256 tokenReward = blockMultiplier * rewardPerBlock;
-                _accRewardPerShare = _accRewardPerShare + (tokenReward * PRECISION_FACTOR / (totalSupply() + totalBoosterShare));
-            }
+            uint256 tokenReward = blockMultiplier * rewardPerBlock;
+            _accRewardPerShare = _accRewardPerShare + (tokenReward * PRECISION_FACTOR / (totalSupply() + totalBoosterShare));
+            
         }
         return (balanceOf(_user) + userInfo[_user].boosterShare) * _accRewardPerShare / PRECISION_FACTOR - userInfo[_user].rewardDebt;
     }
@@ -171,6 +176,7 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
         require(_newRewardPerBlock > rewardPerBlock, "stHOOK: new reward must be greater than current reward");
         updatePool();
         rewardPerBlock = _newRewardPerBlock;
+        emit IncreasedRewardPerBlock(rewardPerBlock, _newRewardPerBlock);
     }
 
     function pause() public onlyOwner {
@@ -181,7 +187,7 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
     function unpause() public onlyOwner {
         updatePool();
         uint256 balance = hookToken.balanceOf(address(this));
-        require(balance >= accruedRewards, "stHOOK: not enough rewards to resume");
+        require(balance >= accruedRewards + totalSupply() , "stHOOK: not enough rewards to resume");
         paused = false;
         emit Pause(paused);
     }
@@ -195,5 +201,6 @@ contract stHOOK is ERC20, ReentrancyGuard, Ownable {
     event Withdraw(address indexed user, uint256 amount);
     event Claim(address indexed user, uint256 amount);
     event Pause(bool paused);
+    event IncreasedRewardPerBlock(uint256 oldRewardPerBlock, uint256 newRewardPerBlock);
 }
 
