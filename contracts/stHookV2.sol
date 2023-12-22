@@ -166,6 +166,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         return userTotalShare * (accRewardPerShare - user.rewardDebtPerShare) / PRECISION_FACTOR;
     }
 
+    // run this function once a day to settle rewards for the previous day
     function settleRewards() public notPaused {
         uint256 currentDay = calculateDay(block.timestamp);
         require(currentDay > settledDay, "stHOOKV2: rewards already settled for today");
@@ -173,7 +174,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         
         uint256 balance = hookToken.balanceOf(address(this));
         // If the contract balance is less than the daily reward and totalSupply, pause the contract
-        if (balance < rewardPerDay + totalSupply()) {
+        if (balance < accruedRewards + totalSupply()) {
             paused = true;
             emit Pause(paused);
         }
