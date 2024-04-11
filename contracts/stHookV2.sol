@@ -11,11 +11,13 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
     IERC20 public immutable hookToken;
     uint256 public totalShares;
     bool public paused = false;
-    uint256 public constant PRECISION_FACTOR = 1e18;
-    uint256 public constant MIN_LOCK_DAYS = 30;
+    uint256 public constant PRECISION_FACTOR = 1e20;
+    uint256 public constant MIN_LOCK_DAYS = 7;
     uint256 public constant MAX_LOCK_DAYS = 1095;
-    uint256 public startDay;
+    uint256 public constant EXPIRED_DAY = 1830211200; // 2027-12-31 00:00:00 UTC
+    uint256 public immutable startDay;
     uint256 public settledDay;
+    uint256 public patchIndex;
 
     struct UserInfo {
         uint256 rewardDebtPerShare;
@@ -23,6 +25,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         uint256 boosterShare;
         uint256 lockTime;
         uint256 unlockDate;
+        uint256 fixedReward;
     }
 
     mapping(uint256 => address[]) public unlockAddresses;
@@ -39,6 +42,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
     event StakeAmountIncreased(address indexed user, uint256 additionalAmount);
     event LockPeriodExtended(address indexed user, uint256 additionalDays);
     event Pause(bool paused);
+    event SetRewardPerDay(uint256 rewardPerDay);
 
     modifier notPaused() {
         require(!paused, "stHOOKV2: paused");
@@ -56,11 +60,19 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
 
     function setRewardPerDay(uint256 _rewardPerDay) public onlyOwner {
         require(_rewardPerDay > 0, "stHOOKV2: reward per day cannot be 0");
+        uint256 currentDay = calculateDay(block.timestamp);
+        require(currentDay == settledDay, "stHOOKV2: The reward has not been settled yet for today");
         rewardPerDay = _rewardPerDay;
+
+        emit SetRewardPerDay(_rewardPerDay);
     }
 
 
     function stake(uint256 _amount, uint256 _lockDays) public nonReentrant notPaused {
+        uint256 currentDay = calculateDay(block.timestamp);
+        require(currentDay >= startDay, "stHOOKV2: stake not started");
+        require(currentDay == settledDay, "stHOOKV2: rewards not settled for today");
+
         require(_amount >= 1 ether, "stHOOKV2: cannot stake less than 1 HOOK");
         require(_lockDays >= MIN_LOCK_DAYS && _lockDays <= MAX_LOCK_DAYS, "stHOOKV2: invalid lock days");
         UserInfo storage user = userInfo[msg.sender];
@@ -68,9 +80,11 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
 
         user.lockTime = calculateStartOfDay(block.timestamp);
         user.unlockDate = calculateUnlockDate(user.lockTime, _lockDays);
+        require(user.unlockDate <= EXPIRED_DAY, "stHOOKV2: lock period exceeds expiration date");
         unlockAddresses[user.unlockDate].push(msg.sender);
         user.lockedAmount = _amount;
         user.boosterShare = calculateBoosterShare(_amount, _lockDays);
+        user.rewardDebtPerShare = accRewardPerShare;
         totalShares += user.boosterShare + _amount;
 
         hookToken.safeTransferFrom(msg.sender, address(this), _amount);
@@ -79,7 +93,10 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
     }
 
     function increaseStakeAmount(uint256 _additionalAmount) public nonReentrant notPaused {
-        require(_additionalAmount > 1 ether, "stHOOKV2: cannot add less than 1 HOOK");
+        uint256 currentDay = calculateDay(block.timestamp);
+        require(currentDay == settledDay, "stHOOKV2: rewards not settled for today");
+
+        require(_additionalAmount >= 1 ether, "stHOOKV2: cannot add less than 1 HOOK");
         UserInfo storage user = userInfo[msg.sender];
         require(user.lockTime != 0, "stHOOKV2: no active stake");
         require(block.timestamp < user.unlockDate, "stHOOKV2: tokens are already unlocked");
@@ -89,7 +106,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         user.lockedAmount += _additionalAmount;
         uint256 additionalShares;
 
-        additionalShares = calculateBoosterShare(_additionalAmount, (user.unlockDate - block.timestamp) / 1 days);
+        additionalShares = calculateBoosterShare(_additionalAmount, (user.unlockDate - block.timestamp) / 1 days + 1);
         user.boosterShare += additionalShares;
         totalShares += additionalShares + _additionalAmount;
         
@@ -99,6 +116,9 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
     }
 
     function extendLockPeriod(uint256 _additionalDays) public nonReentrant notPaused {
+        uint256 currentDay = calculateDay(block.timestamp);
+        require(currentDay == settledDay, "stHOOKV2: rewards not settled for today");
+
         require(_additionalDays > 0, "stHOOKV2: cannot add 0 days");
         UserInfo storage user = userInfo[msg.sender];
         require(user.lockTime != 0, "stHOOKV2: no active stake");
@@ -113,6 +133,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         removeElement(unlockAddresses[user.unlockDate], msg.sender);
 
         user.unlockDate = calculateUnlockDate(user.lockTime, newLockDays);
+        require(user.unlockDate <= EXPIRED_DAY, "stHOOKV2: lock period exceeds expiration date");
 
         unlockAddresses[user.unlockDate].push(msg.sender);
         uint256 additionalShares = calculateBoosterShare(user.lockedAmount, _additionalDays);
@@ -124,26 +145,32 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
 
     function withdrawAll() public nonReentrant notPaused {
         uint256 currentDay = calculateDay(block.timestamp);
-        require(currentDay == settledDay, "stHOOKV2: rewards not settled for today");
+        require((currentDay == settledDay && currentDay <= EXPIRED_DAY) || (settledDay == EXPIRED_DAY && currentDay > EXPIRED_DAY), "stHOOKV2: rewards not settled for today");
         UserInfo storage user = userInfo[msg.sender];
         require(block.timestamp > user.unlockDate, "stHOOKV2: tokens are still locked");
 
         uint256 rewardToClaim = pendingReward(msg.sender);
         uint256 totalAmount = user.lockedAmount + rewardToClaim;
+        uint256 lockAmount = user.lockedAmount;
 
         if (totalAmount > 0) {
+            totalShares -= lockAmount + user.boosterShare;
             user.lockedAmount = 0;
             user.rewardDebtPerShare = 0;
             user.boosterShare = 0;
             user.lockTime = 0;
+            user.fixedReward = 0;
             hookToken.safeTransfer(msg.sender, totalAmount);
-            _burn(msg.sender, user.lockedAmount);
+            _burn(msg.sender, lockAmount);
         }
         accruedRewards -= rewardToClaim;
-        emit Withdraw(msg.sender, user.lockedAmount);
+        emit Withdraw(msg.sender, lockAmount);
     }
 
     function claim() public nonReentrant notPaused {
+        uint256 currentDay = calculateDay(block.timestamp);
+        require((currentDay == settledDay && currentDay <= EXPIRED_DAY) || (settledDay == EXPIRED_DAY && currentDay > EXPIRED_DAY), "stHOOKV2: rewards not settled for today");
+
         claimReward();
     }
 
@@ -155,6 +182,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
 
             UserInfo storage user = userInfo[msg.sender];
             user.rewardDebtPerShare = accRewardPerShare;
+            user.fixedReward = 0;
             accruedRewards -= reward;
             emit Claim(msg.sender, reward);
         }
@@ -162,21 +190,28 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
 
     function pendingReward(address _user) public view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        uint256 userTotalShare = user.boosterShare + user.lockedAmount;
-        return userTotalShare * (accRewardPerShare - user.rewardDebtPerShare) / PRECISION_FACTOR;
+        uint256 userTotalShare = user.boosterShare + user.lockedAmount; 
+        return user.fixedReward + userTotalShare * (accRewardPerShare - user.rewardDebtPerShare) / PRECISION_FACTOR;
     }
 
     // run this function once a day to settle rewards for the previous day
     function settleRewards() public notPaused {
         uint256 currentDay = calculateDay(block.timestamp);
-        require(currentDay > settledDay, "stHOOKV2: rewards already settled for today");
         require(currentDay > startDay, "stHOOKV2: rewards cannot be settled before start day");
-        
+        require(currentDay > settledDay, "stHOOKV2: rewards already settled for today");
+        require(currentDay <= EXPIRED_DAY, "stHOOKV2: staking had expired");
+        require(patchIndex == 0 , "stHOOKV2: patch had been started");
+
         uint256 balance = hookToken.balanceOf(address(this));
         // If the contract balance is less than the daily reward and totalSupply, pause the contract
-        if (balance < accruedRewards + totalSupply()) {
+        if (balance < accruedRewards + rewardPerDay + totalSupply()) {
             paused = true;
             emit Pause(paused);
+        }
+
+        if (totalShares == 0) {
+            settledDay = settledDay + 1 days;
+            return;
         }
 
         uint256 targetDay = settledDay;
@@ -184,7 +219,8 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         for (uint256 i = 0; i < unlockAddresses[settledDay].length; i++) {
             address userAddress = unlockAddresses[settledDay][i];
             UserInfo storage user = userInfo[userAddress];
-
+            user.fixedReward = pendingReward(userAddress);
+            user.rewardDebtPerShare = accRewardPerShare;
             totalShares -= user.boosterShare;
             user.boosterShare = 0;
         }
@@ -197,37 +233,41 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
     }
 
     // in case there are too many addresses to unlock in one transaction, pause the contract and run the patch
-    function settleRewardsPatchStep1(uint256 startIndex, uint256 maxCount) public onlyOwner {
+    function settleRewardsPatchStep1(uint256 batchSize) public onlyOwner {
         uint256 currentDay = calculateDay(block.timestamp);
         require(currentDay > settledDay, "stHOOKV2: rewards already settled for today");
         require(currentDay > startDay, "stHOOKV2: rewards cannot be settled before start day");
+        require(currentDay <= EXPIRED_DAY, "stHOOKV2: staking had expired");
         
         uint256 balance = hookToken.balanceOf(address(this));
         // If the contract balance is less than the reward and totalSupply, pause the contract
-        if (balance < accruedRewards + totalSupply()) {
+        if (balance < accruedRewards + rewardPerDay + totalSupply()) {
             paused = true;
             emit Pause(paused);
         }
-
-        uint256 count = 0;
-        for (uint256 i = startIndex; i < unlockAddresses[settledDay].length; i++) {
+        uint256 endIndex = (patchIndex + batchSize) < unlockAddresses[settledDay].length ? (patchIndex + batchSize) : unlockAddresses[settledDay].length;
+        for (uint256 i = patchIndex; i < endIndex; i++) {
             address userAddress = unlockAddresses[settledDay][i];
             UserInfo storage user = userInfo[userAddress];
-
+            user.fixedReward = pendingReward(userAddress);
+            user.rewardDebtPerShare = accRewardPerShare;
             totalShares -= user.boosterShare;
             user.boosterShare = 0;
-            count++;
-            if (count >= maxCount) {
-                break;
-            }
-        }        
+        }
+        patchIndex = endIndex;
     }
 
     function settleRewardsPatchStep2() public onlyOwner {
         uint256 currentDay = calculateDay(block.timestamp);
         require(currentDay > settledDay, "stHOOKV2: rewards already settled for today");
         require(currentDay > startDay, "stHOOKV2: rewards cannot be settled before start day");
+        require(currentDay <= EXPIRED_DAY, "stHOOKV2: staking had expired");
+        require(patchIndex == unlockAddresses[settledDay].length, "stHOOKV2: settleRewardsPatchStep1 hadn't complete");
 
+        if (totalShares == 0) {
+            settledDay = settledDay + 1 days;
+            return;
+        }
         uint256 targetDay = settledDay;
 
         accRewardPerShare = accRewardPerShare + (rewardPerDay * PRECISION_FACTOR / totalShares);
@@ -235,6 +275,7 @@ contract stHOOKV2 is ERC20, ReentrancyGuard, Ownable {
         accruedRewards += rewardPerDay;
 
         emit DailyRewardsSettled(targetDay, accRewardPerShare);
+        patchIndex = 0;
     }
 
     function calculateDay(uint256 _timestamp) internal pure returns (uint256) {
