@@ -133,12 +133,12 @@ contract CheckinSocial is ERC20, ReentrancyGuard, Ownable {
 
         for (uint256 i = settleIndex; i < settleIndex + batchSize && i < totalParticipants; i++) {
             address user = checkinUsers[i];
-            CheckinInfo storage userInfo = userCheckinInfo[user];
+            uint256 userCheckinDays = userCheckinInfo[user].checkinDays;
             uint256 share = balanceOf(user);
 
-            if (userInfo.checkinDays < minCheckinDays) {
+            if (userCheckinDays < minCheckinDays) {
                 _burn(user, share);
-            } else if (userInfo.checkinDays < targetCheckinDays) {
+            } else if (userCheckinDays < targetCheckinDays) {
                 hookToken.safeTransfer(user, share / PRECISION_FACTOR * amountPerShare);
                 _burn(user, share);
             } else {
