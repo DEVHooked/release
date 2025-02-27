@@ -47,11 +47,13 @@ contract CheckinSocial is ERC20, ReentrancyGuard, Ownable {
     event Deposit(address indexed user, uint256 amount, uint256 share);
     event Checkin(address indexed user, uint256 checkinDays, uint256 checkinDetail);
     event Settle(uint256 totalRewardShare, uint256 rewardPerUser);
+    event SignerChange(address indexed newSigner);
 
     constructor(IERC20 _hookToken, address _signer) ERC20("HOOK Learn Challenge", "HLC") {
+        require(_hookToken != IERC20(address(0)), "CheckinSocial: invalid hook token");
+        require(_signer != address(0), "CheckinSocial: invalid signer");
         hookToken = _hookToken;
         signer = _signer;
-        roundStatus = RoundStatus.NotStarted;
     }
 
     function initializeRound(uint256 _targetCheckinDays, uint256 _durationDays, uint256 _minCheckinDays, uint256 _depositStartTime, uint256 _checkinStartDay, 
@@ -72,10 +74,6 @@ contract CheckinSocial is ERC20, ReentrancyGuard, Ownable {
         amountPerShare = _amountPerShare;
         maxSharePerUser = _maxSharePerUser*PRECISION_FACTOR; 
         maxSupply = _maxTotalShare*PRECISION_FACTOR;
-
-        totalRewardShare = 0;
-        settleIndex = 0;
-        rewardPerShare = 0;
 
         roundStatus = RoundStatus.Initialized;
         emit InitializeRound(_targetCheckinDays,  _durationDays, _depositStartTime, _checkinStartDay, 
@@ -139,7 +137,7 @@ contract CheckinSocial is ERC20, ReentrancyGuard, Ownable {
             if (userCheckinDays < minCheckinDays) {
                 _burn(user, share);
             } else if (userCheckinDays < targetCheckinDays) {
-                hookToken.safeTransfer(user, share / PRECISION_FACTOR * amountPerShare);
+                hookToken.safeTransfer(user, share * amountPerShare / PRECISION_FACTOR);
                 _burn(user, share);
             } else {
                 totalRewardShare += share;
@@ -174,9 +172,9 @@ contract CheckinSocial is ERC20, ReentrancyGuard, Ownable {
             address user = checkinUsers[i];
             uint256 userCheckinDays = userCheckinInfo[user].checkinDays;
             if (userCheckinDays >= targetCheckinDays) {
-                uint256 reward = balanceOf(user) * rewardPerShare / PRECISION_FACTOR ;
-                hookToken.safeTransfer(user, reward);
                 uint256 balance = balanceOf(user);
+                uint256 reward = balance * rewardPerShare / PRECISION_FACTOR ;
+                hookToken.safeTransfer(user, reward);
                 _burn(user, balance);
             }
         }
@@ -200,7 +198,9 @@ contract CheckinSocial is ERC20, ReentrancyGuard, Ownable {
     }
 
     function setSigner(address _signer) public onlyOwner {
+        require(_signer != address(0), "CheckinSocial: invalid signer");
         signer = _signer;
+        emit SignerChange(_signer);
     }
 
     function getUserCheckinDetailinArray(address user) public view returns (uint256[] memory) {
